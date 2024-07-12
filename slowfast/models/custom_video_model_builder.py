@@ -1448,7 +1448,8 @@ class GLC_Gaze(nn.Module):
 
         # Prepare input.
         spatial_size = cfg.DATA.TRAIN_CROP_SIZE
-        temporal_size = cfg.DATA.NUM_FRAMES  # 8
+        # temporal_size = cfg.DATA.NUM_FRAMES  # 8
+        temporal_size = 8
         in_chans = cfg.DATA.INPUT_CHANNEL_NUM[0]
         use_2d_patch = cfg.MVIT.PATCH_2D  # default false
         self.patch_stride = cfg.MVIT.PATCH_STRIDE
@@ -1682,7 +1683,8 @@ class GLC_Gaze(nn.Module):
         inpt = x[0]  # size (B, 3, 8, 256, 256)
         x = self.patch_embed(inpt)  # size (B, 16384, 96)  16384 = 4*64*64
 
-        T = self.cfg.DATA.NUM_FRAMES // self.patch_stride[0]  # 4
+        # T = self.cfg.DATA.NUM_FRAMES // self.patch_stride[0]  # 4
+        T = 8 // self.patch_stride[0]  # 4
         H = self.cfg.DATA.TRAIN_CROP_SIZE // self.patch_stride[1]  # 64
         W = self.cfg.DATA.TRAIN_CROP_SIZE // self.patch_stride[2]  # 64
         B, N, C = x.shape  # B, 16384, 96

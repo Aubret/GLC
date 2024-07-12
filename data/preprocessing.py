@@ -1,11 +1,18 @@
+import argparse
 import csv
 import numpy as np
 import av
+import sys, os
 
-
+sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/..")
 from moviepy.editor import *
 from tqdm import tqdm
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--src', default='/home/fias/postdoc/datasets/ego4d', type=str)
+parser.add_argument('--dest', default='/home/fias/postdoc/datasets/ego4d', type=str)
+parser.add_argument('--select', default="data/full_ego4d_gaze.csv", type=str)
+args = parser.parse_args()
 
 def clip_videos(source_path, save_path, untrack_csv):
     """
@@ -31,13 +38,22 @@ def clip_videos(source_path, save_path, untrack_csv):
         else:
             untracked[line[0]] = [[start, end, int(line[-1])]]
 
-    for item in tqdm(sorted(os.listdir(source_path))):
-        if item in ['4e07da0c-450f-4c37-95e9-e793cb5d8f7f.mp4',
-                    '5819e52c-4e12-4f86-ad69-76fc215dfbcb.mp4',
-                    '83081c5a-8456-44d8-af67-280034f8f0a6.mp4',
-                    'a77682da-cae7-4e68-8580-6cb47658b23f.mp4']:
-            continue
+    names = {}
+    with open(args.select, "r") as f:
+        datareader = csv.reader(f)
+        for r in datareader:
+            name = r[0].split("/")[0]+".mp4"
+            names[name] = 1
 
+
+
+    # for item in tqdm(sorted(os.listdir(source_path))):
+    for item in tqdm(sorted(names.keys())):
+        # if item in ['4e07da0c-450f-4c37-95e9-e793cb5d8f7f.mp4',
+        #             '5819e52c-4e12-4f86-ad69-76fc215dfbcb.mp4',
+        #             '83081c5a-8456-44d8-af67-280034f8f0a6.mp4',
+        #             'a77682da-cae7-4e68-8580-6cb47658b23f.mp4']:
+        #     continue
         if os.path.splitext(item)[-1] == '.mp4':
             # loading video gfg
             video = VideoFileClip(os.path.join(source_path, item))
@@ -61,7 +77,7 @@ def clip_videos(source_path, save_path, untrack_csv):
                         continue
 
                 clip = video.subclip(start, end)
-                clip.write_videofile(os.path.join(save_path, vid, f'{vid}_t{start}_t{end}.mp4'))
+                clip.write_videofile(os.path.join(save_path, vid, f'{vid}_t{"%05d" % start}_t{"%05d" % end}.mp4'))
 
 
 def get_ego4d_frame_label(data_path, save_path):
@@ -128,16 +144,18 @@ def get_ego4d_frame_label(data_path, save_path):
 
 
 def main():
-    path_to_ego4d = '/path/to/Ego4D'  # change this to your own path
+    path_to_ego4d = args.src # change this to your own path
 
     source_path = f'{path_to_ego4d}/full_scale.gaze'
-    save_path = f'{path_to_ego4d}/clips.gaze'
-    untracked_csv = f'ego4d_gaze_untracked.csv'
+    save_path = f'{args.dest}/clips.gaze'
+    untracked_csv = f'data/ego4d_gaze_untracked.csv'
+    #¢reate small clips of 4 seconds
     clip_videos(source_path=source_path, save_path=save_path, untrack_csv=untracked_csv)
 
-    data_path = path_to_ego4d
-    save_path = f'{path_to_ego4d}/gaze_frame_label'
-    get_ego4d_frame_label(data_path=data_path, save_path=save_path)
+    if args.select == "data/full_ego4d_gaze.csv":
+        data_path = path_to_ego4d
+        save_path = f'{args.dest}/gaze_frame_label'
+        get_ego4d_frame_label(data_path=data_path, save_path=save_path)
 
 
 if __name__ == '__main__':

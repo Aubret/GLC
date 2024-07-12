@@ -1,3 +1,5 @@
+GENERATE:
+  ENABLE: False
 TRAIN:
   ENABLE: True
   DATASET: ego4dgaze

@@ -13,10 +13,10 @@ from slowfast.utils.parser import load_config, parse_args
 # from demo_net import demo
 # from test_net import test  # action recognition
 from test_gaze_net import test  # change to gaze estimation
+from generate_gaze_label import generate_label
 # from train_net import train  # action recognition
 from train_gaze_net import train  # change to gaze estimation
 # from visualization import visualize
-
 
 def main():
     """
@@ -27,8 +27,8 @@ def main():
     cfg = assert_and_infer_cfg(cfg)
 
     # Perform training.
-    if cfg.TRAIN.ENABLE:
-        launch_job(cfg=cfg, init_method=args.init_method, func=train)
+    if cfg.GENERATE.ENABLE:
+        launch_job(cfg=cfg, init_method=args.init_method, func=generate_label)
 
     # Perform multi-clip testing.
     if cfg.TEST.ENABLE:

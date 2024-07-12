@@ -388,6 +388,7 @@ def decode(
         use_offset=use_offset,
     )
     # Perform temporal sampling from the decoded video.
+    # print(frames.shape, start_idx, end_idx, num_frames, clip_sz, frames_idx)
     frames = temporal_sampling(frames, start_idx, end_idx, num_frames)
 
     if get_frame_idx:

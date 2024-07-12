@@ -47,8 +47,7 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
     # Enable eval mode.
     model.eval()
     test_meter.iter_tic()
-
-    for cur_iter, (inputs, labels, labels_hm, video_idx, meta) in enumerate(test_loader):
+    for cur_iter, (inputs, labels, labels_hm, video_idx, meta, _) in enumerate(test_loader):
         if cfg.NUM_GPUS:
             # Transfer the data to the current GPU device.
             if isinstance(inputs, (list,)):
@@ -61,62 +60,53 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
             labels = labels.cuda()
             labels_hm = labels_hm.cuda()
             video_idx = video_idx.cuda()
-
         test_meter.data_toc()
+        preds = model(inputs)
+        # preds, glc = model(inputs, return_glc=True)  # used to visualization glc correlation
 
-        if cfg.DETECTION.ENABLE:
-            # Compute the predictions.
-            preds = model(inputs, meta["boxes"])
-            ori_boxes = meta["ori_boxes"]
-            metadata = meta["metadata"]
+        preds = frame_softmax(preds, temperature=2)  # KLDiv
+        # print(preds.shape)
 
-            preds = preds.detach().cpu() if cfg.NUM_GPUS else preds.detach()
-            ori_boxes = (
-                ori_boxes.detach().cpu() if cfg.NUM_GPUS else ori_boxes.detach()
-            )
-            metadata = (
-                metadata.detach().cpu() if cfg.NUM_GPUS else metadata.detach()
-            )
+        # Gather all the predictions across all the devices to perform ensemble.
+        if cfg.NUM_GPUS > 1:
+            preds, labels, labels_hm, video_idx = du.all_gather([preds, labels, labels_hm, video_idx])
 
-            if cfg.NUM_GPUS > 1:
-                preds = torch.cat(du.all_gather_unaligned(preds), dim=0)
-                ori_boxes = torch.cat(du.all_gather_unaligned(ori_boxes), dim=0)
-                metadata = torch.cat(du.all_gather_unaligned(metadata), dim=0)
+        # PyTorch
+        if cfg.NUM_GPUS:  # compute on cpu
+            preds = preds.cpu()
+            labels = labels.cpu()
+            labels_hm = labels_hm.cpu()
+            video_idx = video_idx.cpu()
+        preds_rescale = preds.detach().view(preds.size()[:-2] + (preds.size(-1) * preds.size(-2),))
+        preds_rescale = (preds_rescale - preds_rescale.min(dim=-1, keepdim=True)[0]) / (preds_rescale.max(dim=-1, keepdim=True)[0] - preds_rescale.min(dim=-1, keepdim=True)[0] + 1e-6)
+        preds_rescale = preds_rescale.view(preds.size())
 
-            test_meter.iter_toc()
-            # Update and log stats.
-            test_meter.update_stats(preds, ori_boxes, metadata)
-            test_meter.log_iter_stats(None, cur_iter)
-        else:
-            # Perform the forward pass.
-            preds = model(inputs)
-            # preds, glc = model(inputs, return_glc=True)  # used to visualization glc correlation
+        print(preds_rescale.shape, labels_hm.shape, torch.max(preds_rescale))
+        f1, recall, precision, threshold = metrics.adaptive_f1(preds_rescale, labels_hm, labels, dataset=cfg.TEST.DATASET)
+        auc = metrics.auc(preds_rescale, labels_hm, labels, dataset=cfg.TEST.DATASET)
 
-            preds = frame_softmax(preds, temperature=2)  # KLDiv
+        test_meter.iter_toc()
 
-            # Gather all the predictions across all the devices to perform ensemble.
-            if cfg.NUM_GPUS > 1:
-                preds, labels, labels_hm, video_idx = du.all_gather([preds, labels, labels_hm, video_idx])
-
-            # PyTorch
-            if cfg.NUM_GPUS:  # compute on cpu
-                preds = preds.cpu()
-                labels = labels.cpu()
-                labels_hm = labels_hm.cpu()
-                video_idx = video_idx.cpu()
-
-            preds_rescale = preds.detach().view(preds.size()[:-2] + (preds.size(-1) * preds.size(-2),))
-            preds_rescale = (preds_rescale - preds_rescale.min(dim=-1, keepdim=True)[0]) / (preds_rescale.max(dim=-1, keepdim=True)[0] - preds_rescale.min(dim=-1, keepdim=True)[0] + 1e-6)
-            preds_rescale = preds_rescale.view(preds.size())
-            f1, recall, precision, threshold = metrics.adaptive_f1(preds_rescale, labels_hm, labels, dataset=cfg.TEST.DATASET)
-            auc = metrics.auc(preds_rescale, labels_hm, labels, dataset=cfg.TEST.DATASET)
-
-            test_meter.iter_toc()
-
-            # Update and log stats.
-            test_meter.update_stats(f1, recall, precision, auc, preds=preds_rescale, labels_hm=labels_hm, labels=labels)  # If running  on CPU (cfg.NUM_GPUS == 0), use 1 to represent 1 CPU.
-            test_meter.log_iter_stats(cur_iter)
-
+        # Update and log stats.
+        test_meter.update_stats(f1, recall, precision, auc, preds=preds_rescale, labels_hm=labels_hm, labels=labels)  # If running  on CPU (cfg.NUM_GPUS == 0), use 1 to represent 1 CPU.
+        test_meter.log_iter_stats(cur_iter)
+        #labels hm: true label position
+        # print(len(inputs))
+        assert len(inputs) == 1
+        for i in range(inputs[0].size(0)):
+            video_split = meta["path"][i].split("/")
+            index_video = video_idx[i]
+            for k in range(inputs[0].size(1)):
+                # print(labels[i,k])
+                video_name = video_split[-2]
+                timestamp_split = video_split[-1].split("_")
+                ts1 = timestamp_split[-2][1:]
+                ts2 = timestamp_split[-1][1:-3]
+                global_index = meta["index"][i,k]
+                # print(video_name, ts1, ts2, labels[i,k], index_video, global_index)
+            # print(labels.shape, labels_hm.shape, video_idx, meta)
+            # print(preds_rescale.shape)
+        break
         test_meter.iter_tic()
 
     # Log epoch stats and print the final testing results.
@@ -131,7 +121,6 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
 
         if cfg.TEST.SAVE_RESULTS_PATH != "":
             save_path = os.path.join(cfg.OUTPUT_DIR, cfg.TEST.SAVE_RESULTS_PATH)
-
             if du.is_root_proc():
                 with pathmgr.open(save_path, "wb") as f:
                     pickle.dump([all_preds, all_labels], f)
@@ -164,8 +153,8 @@ def test(cfg):
 
     # Build the video model and print model statistics.
     model = build_model(cfg)
-    if du.is_master_proc() and cfg.LOG_MODEL_INFO:
-        misc.log_model_info(model, cfg, use_train_input=False)
+    # if du.is_master_proc() and cfg.LOG_MODEL_INFO:
+    #     misc.log_model_info(model, cfg, use_train_input=False)
 
     cu.load_test_checkpoint(cfg, model)
 

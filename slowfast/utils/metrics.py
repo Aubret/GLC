@@ -227,13 +227,14 @@ def auc(preds, labels_hm, labels, dataset):
         out_sq = preds[frame, :, :]
         predicted = ndimage.measurements.center_of_mass(out_sq)
         (i, j) = round(labels[frame, 1] * 63), round(labels[frame, 0] * 63)
-
         z = np.zeros((labels_hm.size(-2), labels_hm.size(-1)))
         if np.isnan(predicted[0]) or np.isnan(predicted[1]):  # the prediction may be nan for some algorithms
             z[z.shape[0] // 2, z.shape[1] // 2] = 1
         else:
             z[int(predicted[0]), int(predicted[1])] = 1
+
         z = ndimage.filters.gaussian_filter(z, 3.2)
+        # print(z.shape, i, j, labels.shape,labels[frame, 1],labels[frame, 0])
         z = z - np.min(z)
         z = z / np.max(z)
         atgt = z[i][j]

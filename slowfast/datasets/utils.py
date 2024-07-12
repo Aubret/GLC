@@ -188,11 +188,15 @@ def spatial_sampling(
             frames, _ = transform.uniform_crop(frames, crop_size, spatial_idx)
         else:
             frames, gaze_loc = transform.uniform_crop_gaze(frames, crop_size, spatial_idx, gaze_loc=gaze_loc)
+        # if gaze_loc is None:
+        #     return frames, orig_frames
+        # else:
+        #     return frames, gaze_loc, orig_frames
 
-    if gaze_loc is None:
-        return frames
-    else:
-        return frames, gaze_loc
+    # if gaze_loc is None:
+    #     return frames, None
+    # else:
+    return frames, gaze_loc
 
 
 def as_binary_vector(labels, num_classes):
@@ -304,6 +308,26 @@ def tensor_normalize(tensor, mean, std):
         std = torch.tensor(std)
     tensor = tensor - mean
     tensor = tensor / std
+    return tensor
+
+
+def tensor_unnormalize(tensor, mean, std):
+    """
+    Normalize a given tensor by subtracting the mean and dividing the std.
+    Args:
+        tensor (tensor): tensor to normalize.
+        mean (tensor or list): mean value to subtract.
+        std (tensor or list): std to divide.
+    """
+    if type(mean) == list:
+        mean = torch.tensor(mean)
+    if type(std) == list:
+        std = torch.tensor(std)
+    tensor = tensor * std
+    tensor = tensor + mean
+    # if tensor.dtype != torch.uint8:
+    #     tensor = tensor * 255.0
+    #     tensor = tensor.to(torch.uint8)
     return tensor
 
 

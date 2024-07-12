@@ -3,25 +3,28 @@
 
 import os
 import random
+import time
 
 import cv2
 import numpy as np
 import csv
 import torch
 import torch.utils.data
+import torchvision
 from torchvision import transforms
 from tqdm import tqdm
 
 import slowfast.utils.logging as logging
 from slowfast.utils.env import pathmgr
 
-from . import decoder as decoder
+from . import decoder as decoder, transform
 from . import utils as utils
 from . import video_container as container
 from .build import DATASET_REGISTRY
 from .random_erasing import RandomErasing
 from .transform import create_random_augment
 from .gaze_io_sample import parse_gtea_gaze
+from .utils import tensor_unnormalize
 
 logger = logging.get_logger(__name__)
 
@@ -81,24 +84,35 @@ class Ego4dgaze(torch.utils.data.Dataset):
         Construct the video loader.
         """
         if self.mode == 'train':
-            path_to_file = 'data/train_ego4d_gaze.csv'
+            path_to_file = self.cfg.GENERATE.GENERATE_FILE
         elif self.mode == 'val' or self.mode == 'test':
-            path_to_file = 'data/test_ego4d_gaze.csv'
+            path_to_file = self.cfg.GENERATE.GENERATE_FILE
         else:
             raise ValueError(f"Don't support mode {self.mode}.")
 
-        assert pathmgr.exists(path_to_file), "{} dir not found".format(path_to_file)
+        if path_to_file == "data/fullfilelist":
+            path_to_file = path_to_file+str(self.cfg.GENERATE.APPEND)+".csv"
 
+        assert pathmgr.exists(path_to_file), "{} dir not found".format(path_to_file)
         self._path_to_videos = []
         self._labels = dict()
         self._spatial_temporal_idx = []
         with pathmgr.open(path_to_file, "r") as f:
-            paths = [item for item in f.read().splitlines()]
-            for clip_idx, path in enumerate(paths):
+            paths = sorted([item for item in f.read().splitlines()])
+            # paths = [item for item in f.read().splitlines()]
+            for clip_idx, path2 in enumerate(paths):
+                video_split = path2.split("/")
+                video_name = video_split[-2]
+                timestamp_split = video_split[-1].split("_")
+                ts1 = timestamp_split[-2][1:]
+                ts2 = timestamp_split[-1][1:-3]
+                path = f'{video_name}_t{"%05d" % int(float(ts1))}_t{"%05d" % int(float(ts2))}.mp4'
                 for idx in range(self._num_clips):
-                    self._path_to_videos.append(os.path.join(self.cfg.DATA.PATH_PREFIX, path))
+                    self._path_to_videos.append(os.path.join(self.cfg.DATA.PATH_PREFIX, video_name, path))
                     self._spatial_temporal_idx.append(idx)  # used in test
                     self._video_meta[clip_idx * self._num_clips + idx] = {}  # only used in torchvision backend
+        # print(self._split_idx)
+        # time.sleep(20)
         assert (len(self._path_to_videos) > 0), "Failed to load Ego4dgaze split {} from {}".format(self._split_idx, path_to_file)
 
         # Read gaze label
@@ -110,9 +124,11 @@ class Ego4dgaze(torch.utils.data.Dataset):
             else:
                 label_name = video_name + '_frame_label.csv'
                 prefix = os.path.dirname(self.cfg.DATA.PATH_PREFIX)
-                with open(os.path.join(f'{prefix}/gaze_frame_label', label_name), 'r') as f:
-                    rows = [list(map(float, row)) for i, row in enumerate(csv.reader(f)) if i > 0]
-                self._labels[video_name] = np.array(rows)[:, 1:]  # [x, y, type,] in line with egtea format
+                path_label = os.path.join(f'{prefix}/gaze_frame_label', label_name)
+                if os.path.exists(path_label):
+                    with open(path_label, 'r') as f:
+                        rows = [list(map(float, row)) for i, row in enumerate(csv.reader(f)) if i > 0]
+                    self._labels[video_name] = np.array(rows)[:, 1:]  # [x, y, type,] in line with egtea format
 
         logger.info("Constructing Ego4D dataloader (size: {}) from {}".format(len(self._path_to_videos), path_to_file))
 
@@ -193,6 +209,7 @@ class Ego4dgaze(torch.utils.data.Dataset):
                 continue
 
             # Decode video. Meta info is used to perform selective decoding.
+            # print(sampling_rate,self.cfg.DATA.NUM_FRAMES,self.cfg.DATA.TARGET_FPS,min_scale,self.cfg.DATA.USE_OFFSET_SAMPLING)
             frames, frames_idx = decoder.decode(
                 container=video_container,
                 sampling_rate=sampling_rate,
@@ -214,11 +231,19 @@ class Ego4dgaze(torch.utils.data.Dataset):
             clip_tstart, clip_tend = int(clip_tstart[1:]), int(clip_tend[1:])  # remove 't'
             clip_fstart, clip_fend = clip_tstart * self.cfg.DATA.TARGET_FPS, clip_tend * self.cfg.DATA.TARGET_FPS
             frames_global_idx = frames_idx.numpy() + clip_fstart - 1
+            # print(frames_idx)
+            # print(frames_global_idx)
+            # print("here", frames.shape, video_path)
+            # print(clip_fstart, clip_fend, frames_global_idx, frames_idx)
+
             if self.mode not in ['test'] and frames_global_idx[-1] >= self._labels[video_name].shape[0]:  # Some frames don't have labels. Try to use another one
                 # logger.info('No annotations:', video_name, clip_name)
                 index = random.randint(0, len(self._path_to_videos) - 1)
                 continue
-            label = self._labels[video_name][frames_global_idx, :]
+            if video_name in self._labels:
+                label = self._labels[video_name][frames_global_idx, :]
+            else:
+                label = None
 
             # If decoding failed (wrong format, video is too short, and etc),
             # select another video.
@@ -248,9 +273,13 @@ class Ego4dgaze(torch.utils.data.Dataset):
                     frames = self._aug_frame(frames, spatial_sample_index, min_scale, max_scale, crop_size)
 
             else:
+
                 frames = utils.tensor_normalize(frames, self.cfg.DATA.MEAN, self.cfg.DATA.STD)
                 # T H W C -> C T H W.
                 frames = frames.permute(3, 0, 1, 2)
+                # frames = torch.nn.functional.pad(frames, (200,0), "constant", 0)
+                original_frames = frames
+
                 # Perform data augmentation.
                 frames, label = utils.spatial_sampling(
                     frames,
@@ -263,20 +292,31 @@ class Ego4dgaze(torch.utils.data.Dataset):
                     inverse_uniform_sampling=self.cfg.DATA.INV_UNIFORM_SAMPLE,
                 )
 
+                #
+                # print(frames3.shape, "here", label, spatial_sample_index)
+                # f2 = frames3.permute(1,0,2,3)
+
+                original_frames = utils.pack_pathway_output(self.cfg, original_frames)
+
+                # print(frames.shape)
+                # time.sleep(20)
+
             frames = utils.pack_pathway_output(self.cfg, frames)
 
             label_hm = np.zeros(shape=(frames[0].size(1), frames[0].size(2) // 4, frames[0].size(3) // 4))
-            for i in range(label_hm.shape[0]):
-                self._get_gaussian_map(label_hm[i, :, :], center=(label[i, 0] * label_hm.shape[2], label[i, 1] * label_hm.shape[1]),
-                                       kernel_size=self.cfg.DATA.GAUSSIAN_KERNEL, sigma=-1)  # sigma=-1 means use default sigma
-                d_sum = label_hm[i, :, :].sum()
-                if d_sum == 0:  # gaze may be outside the image
-                    label_hm[i, :, :] = label_hm[i, :, :] + 1 / (label_hm.shape[1] * label_hm.shape[2])
-                elif d_sum != 1:  # gaze may be right at the edge of image
-                    label_hm[i, :, :] = label_hm[i, :, :] / d_sum
-
+            if label is not None:
+                for i in range(label_hm.shape[0]):
+                    self._get_gaussian_map(label_hm[i, :, :], center=(label[i, 0] * label_hm.shape[2], label[i, 1] * label_hm.shape[1]),
+                                           kernel_size=self.cfg.DATA.GAUSSIAN_KERNEL, sigma=-1)  # sigma=-1 means use default sigma
+                    d_sum = label_hm[i, :, :].sum()
+                    if d_sum == 0:  # gaze may be outside the image
+                        label_hm[i, :, :] = label_hm[i, :, :] + 1 / (label_hm.shape[1] * label_hm.shape[2])
+                    elif d_sum != 1:  # gaze may be right at the edge of image
+                        label_hm[i, :, :] = label_hm[i, :, :] / d_sum
+            else:
+                label = torch.zeros((frames[0].shape[1],3))
             label_hm = torch.as_tensor(label_hm).float()
-            return frames, label, label_hm, index, {'path': self._path_to_videos[index], 'index': np.array(frames_global_idx)}
+            return frames, label, label_hm, index, {'path': self._path_to_videos[index], 'index': np.array(frames_global_idx)}, original_frames
         else:
             raise RuntimeError("Failed to fetch video after {} retries.".format(self._num_retries))
 
