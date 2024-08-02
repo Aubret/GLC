@@ -4,7 +4,7 @@ This document provides explinas how to generate ego4d data
 
 # Preprocess
 
-### Download Ego4d videos
+### Download Ego4d videos and available gaze data
 
 ```
 ego4d --output_directory=SRC --yes --datasets video_540ss
@@ -31,13 +31,12 @@ done
 
 First, videos with true labels
 ```
-i=0
 python3 tools/run_net.py --cfg ./configs/Ego4d/MVIT_B_16x4_CONV.yaml 
-    TRAIN.CHECKPOINT_FILE_PATH /checkpoints/MViT_Ego4D_ckpt.pyth
+    TRAIN.CHECKPOINT_FILE_PATH checkpoints/MViT_Ego4D_ckpt.pyth
     GENERATE.ENABLE True
-    GENERATE.GENERATE_FILE data/fullfilelist 
+    GENERATE.GENERATE_FILE data/full_ego4d_gaze.csv 
     GENERATE.PATH_DATASET {DESTHDF5}
-    GENERATE.APPEND $i
+    GENERATE.APPEND 0
     GENERATE.LOG False 
     GENERATE.TRUE_LABEL True 
     DATA.PATH_PREFIX {DEST}/clips.gaze 
@@ -50,7 +49,7 @@ Then videos with generated labels
 for i in {1..94}
 do
     python3 tools/run_net.py --cfg ./configs/Ego4d/MVIT_B_16x4_CONV.yaml 
-        TRAIN.CHECKPOINT_FILE_PATH /checkpoints/MViT_Ego4D_ckpt.pyth
+        TRAIN.CHECKPOINT_FILE_PATH checkpoints/MViT_Ego4D_ckpt.pyth
         GENERATE.ENABLE True
         GENERATE.GENERATE_FILE data/fullfilelist 
         GENERATE.PATH_DATASET {DESTHDF5}

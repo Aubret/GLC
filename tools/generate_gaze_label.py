@@ -6,13 +6,14 @@ import csv
 import io
 import sys
 
+import cv2
 import h5py
 import numpy as np
 import os
 import torch
 from PIL import Image
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/..")
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) + "/..")
 
 import slowfast.utils.checkpoint as cu
 import slowfast.utils.distributed as du
@@ -21,15 +22,46 @@ import slowfast.utils.misc as misc
 import slowfast.utils.metrics as metrics
 import slowfast.visualization.tensorboard_vis as tb
 from slowfast.datasets import loader, transform
-from slowfast.datasets.utils import tensor_unnormalize
 from slowfast.models import build_model
-from slowfast.utils.env import pathmgr
 from slowfast.utils.meters import AVAMeter, TestMeter, TestGazeMeter
 from slowfast.utils.utils import frame_softmax
-from generate_gaze import show_cam_on_image
 
 logger = logging.get_logger(__name__)
 
+LOG_DIR = "/home/fias/postdoc/gym_results/test_images/ego4d"
+
+def show_cam_on_image(img: np.ndarray,
+                      mask: np.ndarray,
+                      use_rgb: bool = False,
+                      colormap: int = cv2.COLORMAP_JET,
+                      image_weight: float = 0.5) -> np.ndarray:
+    """ This function overlays the cam mask on the image as an heatmap.
+    By default the heatmap is in BGR format.
+
+    :param img: The base image in RGB or BGR format.
+    :param mask: The cam mask.
+    :param use_rgb: Whether to use an RGB or BGR heatmap, this should be set to True if 'img' is in RGB format.
+    :param colormap: The OpenCV colormap to be used.
+    :param image_weight: The final result is image_weight * img + (1-image_weight) * mask.
+    :returns: The default image with the cam overlay.
+    """
+    heatmap = cv2.applyColorMap(np.uint8(255 * mask), colormap)
+    if use_rgb:
+        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
+    heatmap = np.float32(heatmap) / 255
+
+    if np.max(img) > 1:
+        raise Exception(
+            "The input image should np.float32 in the range [0, 1]")
+
+    if image_weight < 0 or image_weight > 1:
+        raise Exception(
+            f"image_weight should be in the range [0, 1].\
+                Got: {image_weight}")
+
+    cam = (1 - image_weight) * heatmap + image_weight * img
+    cam = cam / np.max(cam)
+    return np.uint8(255 * cam)
 
 
 def crop_gaze_image(image, gaze, gaze_size, max = (64, 64)):
@@ -107,11 +139,15 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
     print(test_loader.dataset.num_videos*(cfg.DATA.NUM_FRAMES - cfg.DATA.SAMPLING_RATE))
     with h5py.File(f'{cfg.GENERATE.PATH_DATASET}data{partition}.hdf5', 'w') as hf:
         # frame_number = test_loader.dataset.num_videos*(cfg.DATA.NUM_FRAMES - cfg.DATA.SAMPLING_RATE)
+        h5frames = hf.create_group("frames")
+        h5sal = hf.create_group("saliency")
+
         frames = []
-        dataset_number = 0
-        # if not cfg.GENERATE.APPEND:
+        saliency_maps = []
         for _ in cfg.GENERATE.GAZE_SIZE:
             frames.append([])
+
+        dataset_number = 0
         cpt = 0
         h5_index = 0
         for cur_iter, (inputs, labels, labels_hm, video_idx, meta, orig_inputs) in enumerate(test_loader):
@@ -208,21 +244,24 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
 
                         #Display the crops
                         if cfg.GENERATE.LOG:
-                            if not os.path.exists(f"../gym_results/test_images/ego4d/{str(gs)}/"):
-                                os.makedirs(f"../gym_results/test_images/ego4d/{str(gs)}/")
-                            Image.fromarray(gaze_frame.transpose(1,2,0)).save(f"../gym_results/test_images/ego4d/{str(gs)}/" + str(cpt) + ".png")
+                            if not os.path.exists(f"{LOG_DIR}/{str(gs)}/"):
+                                os.makedirs(f"{LOG_DIR}//{str(gs)}/")
+                            Image.fromarray(gaze_frame.transpose(1,2,0)).save(f"{LOG_DIR}/{str(gs)}/" + str(cpt) + ".png")
+                    row.extend([int(lab[0].item()*540/64), int(lab[1].item()*540/64)])
+                    saliency_maps.append(labels_hm[i,k])
 
                     # Display the saliency
                     if cfg.GENERATE.LOG:
+                        print("Gaze location", lab*540/64)
                         pred_rescale = normalize_map(labels_hm[i:i+1,k:k+1].unsqueeze(1))[:,:,0]
                         new_frame = (framest[:,k] * cfg.DATA.STD[0]) + cfg.DATA.MEAN[0]
                         pred_rescale = torch.nn.functional.interpolate(pred_rescale, size=new_frame.size()[1:]).squeeze(0).numpy()
 
                         new_frame = new_frame.numpy()
                         new_frame = show_cam_on_image(new_frame.transpose(1,2,0), pred_rescale.transpose(1,2,0), use_rgb=True)
-                        if not os.path.exists("../gym_results/test_images/ego4d/labels_saliency/"):
-                            os.makedirs("../gym_results/test_images/ego4d/labels_saliency/")
-                        Image.fromarray(new_frame).save("../gym_results/test_images/ego4d/labels_saliency/" + str(cpt) + ".png")
+                        if not os.path.exists(f"{LOG_DIR}//labels_saliency/"):
+                            os.makedirs(f"{LOG_DIR}//labels_saliency/")
+                        Image.fromarray(new_frame).save(f"{LOG_DIR}//labels_saliency/" + str(cpt) + ".png")
 
 
                     # Save in dataset
@@ -230,18 +269,29 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
                     csv_writer.writerow(row)
                     cpt += 1
                     h5_index += 1
-                    if cpt%50000 == 0:
+                    # if cpt%50000 == 0:
+                    dump_frequency = 50000 if not cfg.GENERATE.LOG else 100
+                    if cpt%dump_frequency == 0:
                         for f_pos, gs2 in enumerate(cfg.GENERATE.GAZE_SIZE):
-                            hf.create_dataset(f"images{str(gs2)}_{str(dataset_number)}", data=frames[f_pos])
-                            frames[f_pos] = []
+                            h5frames.create_dataset(f"images{str(gs2)}_{str(dataset_number)}", data=frames[f_pos])
+                        h5sal.create_dataset(str(dataset_number), data=np.stack(saliency_maps))
                         h5_index = 0
                         dataset_number += 1
-            test_meter.iter_tic()
 
+                        frames = []
+                        saliency_maps = []
+                        for _ in cfg.GENERATE.GAZE_SIZE:
+                            frames.append([])
+
+            test_meter.iter_tic()
+            if cfg.GENERATE.LOG and cpt > 300:
+                break
 
         if len(frames[0]) > 0:
             for i, gs2 in enumerate(cfg.GENERATE.GAZE_SIZE):
-                hf.create_dataset(f"images{str(gs2)}_{str(dataset_number)}", data=frames[i])
+                h5frames.create_dataset(f"images{str(gs2)}_{str(dataset_number)}", data=frames[i])
+            h5sal.create_dataset(str(dataset_number), data=np.stack(saliency_maps))
+
     dataset_number += 1
     print("finish", cpt, test_loader.dataset.num_videos*cfg.DATA.NUM_FRAMES)
     csv_file.close()

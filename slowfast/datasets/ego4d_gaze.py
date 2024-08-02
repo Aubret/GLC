@@ -91,9 +91,10 @@ class Ego4dgaze(torch.utils.data.Dataset):
             raise ValueError(f"Don't support mode {self.mode}.")
 
         if path_to_file == "data/fullfilelist":
+            assert pathmgr.exists(path_to_file), "{} dir not found".format(path_to_file)
+
             path_to_file = path_to_file+str(self.cfg.GENERATE.APPEND)+".csv"
 
-        assert pathmgr.exists(path_to_file), "{} dir not found".format(path_to_file)
         self._path_to_videos = []
         self._labels = dict()
         self._spatial_temporal_idx = []

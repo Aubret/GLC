@@ -1,7 +1,7 @@
 GENERATE:
   ENABLE: True
   SIZE: 540
-  GAZE_SIZE: [114,160,224,313,439,540]
+  GAZE_SIZE: [540]
   GENERATE_FILE: "data/test_ego4d_gaze_tmp.csv"
   APPEND: 0
   PATH_DATASET: "data/"
@@ -17,8 +17,8 @@ TRAIN:
   CHECKPOINT_EPOCH_RESET: True
 DATA:
   PATH_PREFIX: '/home/fias/postdoc/datasets/ego4d/clips.gaze'
-  NUM_FRAMES: 50
-  SAMPLING_RATE: 3
+  NUM_FRAMES: 25
+  SAMPLING_RATE: 6
   TRAIN_JITTER_SCALES: [256, 320]
   TRAIN_CROP_SIZE: 256
   TEST_CROP_SIZE: 256
